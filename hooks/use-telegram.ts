@@ -1,34 +1,55 @@
 // hooks/use-telegram.ts
 import { useState, useEffect, useCallback } from 'react'
-import { useToast } from '@/hooks/use-toast'
-
-interface TelegramUser {
-  id: number
-  telegram_id: string
-  username: string
-  full_name: string
-  status: 'pending' | 'active' | 'inactive'
-  role: string
-  created_at: string
-}
 
 interface BotStats {
+  bot_status: 'online' | 'offline' | 'error'
   active_users: number
   total_activities: number
   today_activities: number
   commands_today: number
   files_uploaded: number
   tasks_created: number
-  bot_status: 'online' | 'offline' | 'error'
+  response_time: number
+  uptime: string
 }
 
-export function useTelegram() {
+interface PendingUser {
+  id: number
+  username: string
+  full_name: string
+  email: string
+  telegram_id: string
+  created_at: string
+  requested_role: string
+  phone?: string
+}
+
+interface BotActivity {
+  id: number
+  user_name: string
+  user_role: string
+  command: string
+  activity_type: string
+  description: string
+  timestamp: string
+  status: 'success' | 'error' | 'pending'
+}
+
+interface UseTelegramOptions {
+  autoRefresh?: boolean
+  refreshInterval?: number
+}
+
+export function useTelegram(options: UseTelegramOptions = {}) {
+  const { autoRefresh = true, refreshInterval = 30000 } = options
+  
   const [botStats, setBotStats] = useState<BotStats | null>(null)
-  const [pendingUsers, setPendingUsers] = useState<TelegramUser[]>([])
+  const [pendingUsers, setPendingUsers] = useState<PendingUser[]>([])
+  const [recentActivity, setRecentActivity] = useState<BotActivity[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const { toast } = useToast()
 
+  // Fetch bot statistics
   const fetchBotStats = useCallback(async () => {
     try {
       const token = localStorage.getItem('authToken')
@@ -40,11 +61,11 @@ export function useTelegram() {
       })
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: Failed to fetch bot stats`)
+        throw new Error('Failed to fetch bot stats')
       }
 
       const data = await response.json()
-      setBotStats(data.stats)
+      setBotStats(data)
       setError(null)
     } catch (err: any) {
       setError(err.message)
@@ -52,6 +73,7 @@ export function useTelegram() {
     }
   }, [])
 
+  // Fetch pending users
   const fetchPendingUsers = useCallback(async () => {
     try {
       const token = localStorage.getItem('authToken')
@@ -63,7 +85,7 @@ export function useTelegram() {
       })
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: Failed to fetch pending users`)
+        throw new Error('Failed to fetch pending users')
       }
 
       const data = await response.json()
@@ -73,6 +95,40 @@ export function useTelegram() {
     }
   }, [])
 
+  // Fetch recent activity
+  const fetchRecentActivity = useCallback(async (filters: {
+    type?: string
+    range?: string
+    role?: string
+    limit?: number
+  } = {}) => {
+    try {
+      const token = localStorage.getItem('authToken')
+      const params = new URLSearchParams()
+      
+      Object.entries(filters).forEach(([key, value]) => {
+        if (value) params.append(key, value.toString())
+      })
+
+      const response = await fetch(`/api/telegram/activity?${params}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch activity')
+      }
+
+      const data = await response.json()
+      setRecentActivity(data.activities || [])
+    } catch (err: any) {
+      console.error('Failed to fetch activity:', err)
+    }
+  }, [])
+
+  // Approve user
   const approveUser = useCallback(async (userId: number, role: string = 'technician') => {
     try {
       const token = localStorage.getItem('authToken')
@@ -92,26 +148,16 @@ export function useTelegram() {
 
       const result = await response.json()
       
-      toast({
-        title: 'User Approved',
-        description: result.message || 'User has been approved successfully',
-      })
-
-      // Refresh pending users list
-      await fetchPendingUsers()
-      await fetchBotStats()
-
-      return true
+      // Refresh data
+      await Promise.all([fetchPendingUsers(), fetchBotStats()])
+      
+      return { success: true, message: result.message }
     } catch (err: any) {
-      toast({
-        title: 'Approval Failed',
-        description: err.message,
-        variant: 'destructive',
-      })
-      return false
+      return { success: false, error: err.message }
     }
-  }, [fetchPendingUsers, fetchBotStats, toast])
+  }, [fetchPendingUsers, fetchBotStats])
 
+  // Reject user
   const rejectUser = useCallback(async (userId: number, reason?: string) => {
     try {
       const token = localStorage.getItem('authToken')
@@ -131,26 +177,17 @@ export function useTelegram() {
 
       const result = await response.json()
       
-      toast({
-        title: 'User Rejected',
-        description: result.message || 'User registration has been rejected',
-      })
-
-      // Refresh pending users list
+      // Refresh data
       await fetchPendingUsers()
-
-      return true
+      
+      return { success: true, message: result.message }
     } catch (err: any) {
-      toast({
-        title: 'Rejection Failed',
-        description: err.message,
-        variant: 'destructive',
-      })
-      return false
+      return { success: false, error: err.message }
     }
-  }, [fetchPendingUsers, toast])
+  }, [fetchPendingUsers])
 
-  const sendBotCommand = useCallback(async (command: string, parameters: string) => {
+  // Send bot command
+  const sendBotCommand = useCallback(async (command: string, parameters: string = '', targetUserId?: number) => {
     try {
       const token = localStorage.getItem('authToken')
       const response = await fetch('/api/telegram/send-command', {
@@ -159,7 +196,7 @@ export function useTelegram() {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ command, parameters }),
+        body: JSON.stringify({ command, parameters, target_user_id: targetUserId }),
       })
 
       if (!response.ok) {
@@ -169,96 +206,150 @@ export function useTelegram() {
 
       const result = await response.json()
       
-      toast({
-        title: 'Command Sent',
-        description: result.message || 'Command executed successfully',
-      })
-
-      // Refresh stats after command
-      setTimeout(fetchBotStats, 1000)
-
-      return result
+      // Refresh activity data
+      setTimeout(() => {
+        fetchRecentActivity()
+        fetchBotStats()
+      }, 1000)
+      
+      return { success: true, message: result.message, result: result.result }
     } catch (err: any) {
-      toast({
-        title: 'Command Failed',
-        description: err.message,
-        variant: 'destructive',
-      })
-      throw err
+      return { success: false, error: err.message }
     }
-  }, [fetchBotStats, toast])
+  }, [fetchRecentActivity, fetchBotStats])
 
+  // Send broadcast message
+  const sendBroadcast = useCallback(async (message: string, targetRole: string = 'all', urgent: boolean = false) => {
+    try {
+      const token = localStorage.getItem('authToken')
+      const response = await fetch('/api/telegram/broadcast', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ message, target_role: targetRole, urgent }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.message || 'Failed to send broadcast')
+      }
+
+      const result = await response.json()
+      
+      // Refresh activity data
+      setTimeout(() => {
+        fetchRecentActivity()
+        fetchBotStats()
+      }, 1000)
+      
+      return { success: true, message: result.message, stats: result.stats }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }, [fetchRecentActivity, fetchBotStats])
+
+  // Refresh all data
   const refreshData = useCallback(async () => {
     setIsLoading(true)
     try {
-      await Promise.all([fetchBotStats(), fetchPendingUsers()])
+      await Promise.all([
+        fetchBotStats(),
+        fetchPendingUsers(),
+        fetchRecentActivity()
+      ])
     } finally {
       setIsLoading(false)
     }
-  }, [fetchBotStats, fetchPendingUsers])
+  }, [fetchBotStats, fetchPendingUsers, fetchRecentActivity])
 
+  // Initial data load
   useEffect(() => {
     refreshData()
-    
-    // Set up periodic refresh
-    const interval = setInterval(fetchBotStats, 30000) // Refresh stats every 30 seconds
-    
+  }, [refreshData])
+
+  // Auto-refresh setup
+  useEffect(() => {
+    if (!autoRefresh) return
+
+    const interval = setInterval(() => {
+      fetchBotStats()
+      fetchRecentActivity()
+    }, refreshInterval)
+
     return () => clearInterval(interval)
-  }, [refreshData, fetchBotStats])
+  }, [autoRefresh, refreshInterval, fetchBotStats, fetchRecentActivity])
 
   return {
+    // Data
     botStats,
     pendingUsers,
+    recentActivity,
     isLoading,
     error,
+    
+    // Actions
     approveUser,
     rejectUser,
     sendBotCommand,
+    sendBroadcast,
     refreshData,
+    
+    // Fetch functions for manual control
+    fetchBotStats,
+    fetchPendingUsers,
+    fetchRecentActivity: (filters?: any) => fetchRecentActivity(filters),
   }
 }
 
-// hooks/use-bot-activity.ts
-interface BotActivity {
-  id: number
-  user_name: string
-  command: string
-  activity_type?: string
-  description: string
-  timestamp: string
-  status: 'success' | 'error' | 'pending'
-}
-
-export function useBotActivity() {
+// Hook for real-time activity monitoring
+export function useBotActivity(filters: {
+  type?: string
+  range?: string
+  role?: string
+  limit?: number
+} = {}) {
   const [activities, setActivities] = useState<BotActivity[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   const fetchActivities = useCallback(async () => {
     try {
       const token = localStorage.getItem('authToken')
-      const response = await fetch('/api/telegram/activity', {
+      const params = new URLSearchParams()
+      
+      Object.entries(filters).forEach(([key, value]) => {
+        if (value) params.append(key, value.toString())
+      })
+
+      const response = await fetch(`/api/telegram/activity?${params}`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       })
 
-      if (response.ok) {
-        const data = await response.json()
-        setActivities(data.activities || [])
+      if (!response.ok) {
+        throw new Error('Failed to fetch activities')
       }
-    } catch (err) {
-      console.error('Failed to fetch bot activities:', err)
+
+      const data = await response.json()
+      setActivities(data.activities || [])
+      setError(null)
+    } catch (err: any) {
+      setError(err.message)
+      console.error('Failed to fetch activities:', err)
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [filters])
 
   useEffect(() => {
     fetchActivities()
     
-    // Refresh activities every minute
-    const interval = setInterval(fetchActivities, 60000)
+    // Refresh every 30 seconds
+    const interval = setInterval(fetchActivities, 30000)
     
     return () => clearInterval(interval)
   }, [fetchActivities])
@@ -266,246 +357,166 @@ export function useBotActivity() {
   return {
     activities,
     isLoading,
+    error,
     refreshActivities: fetchActivities,
   }
 }
 
-// Additional API routes needed:
+// Hook for managing bot configuration
+export function useBotConfig() {
+  const [config, setConfig] = useState<any>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-// app/api/telegram/pending-users/route.ts
-import { NextRequest, NextResponse } from "next/server"
-import { openDb } from "@/lib/database"
-import { verifyToken } from "@/lib/auth"
+  const fetchConfig = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('authToken')
+      const response = await fetch('/api/telegram/config', {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      })
 
-export async function GET(request: NextRequest) {
-  try {
-    const user = await verifyToken(request)
-    if (!user || user.role !== 'manager') {
-      return NextResponse.json({ message: "Unauthorized" }, { status: 401 })
+      if (!response.ok) {
+        throw new Error('Failed to fetch bot config')
+      }
+
+      const data = await response.json()
+      setConfig(data)
+      setError(null)
+    } catch (err: any) {
+      setError(err.message)
+      console.error('Failed to fetch bot config:', err)
+    } finally {
+      setIsLoading(false)
     }
+  }, [])
 
-    const db = await openDb()
-    
-    const pendingUsers = await db.all(`
-      SELECT id, username, full_name, email, telegram_id, created_at, role
-      FROM users 
-      WHERE status = 'pending' AND telegram_id IS NOT NULL
-      ORDER BY created_at DESC
-    `)
+  const updateConfig = useCallback(async (newConfig: any) => {
+    try {
+      const token = localStorage.getItem('authToken')
+      const response = await fetch('/api/telegram/config', {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(newConfig),
+      })
 
-    return NextResponse.json({ users: pendingUsers })
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.message || 'Failed to update config')
+      }
 
-  } catch (error) {
-    console.error("Pending users error:", error)
-    return NextResponse.json(
-      { message: "Internal server error" },
-      { status: 500 }
-    )
+      const result = await response.json()
+      setConfig(result.config)
+      
+      return { success: true, message: result.message }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }, [])
+
+  const restartBot = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('authToken')
+      const response = await fetch('/api/telegram/restart', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.message || 'Failed to restart bot')
+      }
+
+      const result = await response.json()
+      
+      return { success: true, message: result.message }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchConfig()
+  }, [fetchConfig])
+
+  return {
+    config,
+    isLoading,
+    error,
+    updateConfig,
+    restartBot,
+    refreshConfig: fetchConfig,
   }
 }
 
-// app/api/telegram/approve-user/route.ts
-export async function POST(request: NextRequest) {
-  try {
-    const user = await verifyToken(request)
-    if (!user || user.role !== 'manager') {
-      return NextResponse.json({ message: "Unauthorized" }, { status: 401 })
-    }
-
-    const { userId, role = 'technician' } = await request.json()
-
-    if (!userId) {
-      return NextResponse.json(
-        { message: "User ID is required" },
-        { status: 400 }
-      )
-    }
-
-    const validRoles = ['manager', 'technician', 'commercial', 'other']
-    if (!validRoles.includes(role)) {
-      return NextResponse.json(
-        { message: "Invalid role specified" },
-        { status: 400 }
-      )
-    }
-
-    const db = await openDb()
-    
-    // Update user status and role
-    const result = await db.run(
-      'UPDATE users SET status = ?, role = ? WHERE id = ? AND status = ?',
-      ['active', role, userId, 'pending']
-    )
-
-    if (result.changes === 0) {
-      return NextResponse.json(
-        { message: "User not found or already processed" },
-        { status: 404 }
-      )
-    }
-
-    // Get user details for notification
-    const updatedUser = await db.get(
-      'SELECT username, full_name, telegram_id FROM users WHERE id = ?',
-      [userId]
-    )
-
-    // TODO: Send approval notification to user via Telegram
-    // This would require integration with the bot service
-
-    return NextResponse.json({
-      message: `User ${updatedUser.full_name} approved as ${role}`,
-      user: updatedUser
+// Utility functions for formatting and validation
+export const telegramUtils = {
+  formatTimestamp: (timestamp: string) => {
+    return new Date(timestamp).toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
     })
+  },
 
-  } catch (error) {
-    console.error("Approve user error:", error)
-    return NextResponse.json(
-      { message: "Internal server error" },
-      { status: 500 }
-    )
-  }
-}
+  formatDuration: (seconds: number) => {
+    const hours = Math.floor(seconds / 3600)
+    const minutes = Math.floor((seconds % 3600) / 60)
+    const secs = seconds % 60
 
-// app/api/telegram/activity/route.ts
-export async function GET(request: NextRequest) {
-  try {
-    const user = await verifyToken(request)
-    if (!user) {
-      return NextResponse.json({ message: "Unauthorized" }, { status: 401 })
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`
+    } else if (minutes > 0) {
+      return `${minutes}m ${secs}s`
+    } else {
+      return `${secs}s`
     }
+  },
 
-    const db = await openDb()
+  getBotStatusColor: (status: string) => {
+    switch (status) {
+      case 'online': return 'text-green-600'
+      case 'offline': return 'text-red-600'
+      case 'error': return 'text-yellow-600'
+      default: return 'text-gray-600'
+    }
+  },
+
+  getActivityIcon: (activityType: string) => {
+    switch (activityType) {
+      case 'telegram_command': return '??'
+      case 'file_upload': return '??'
+      case 'task_update': return '?'
+      case 'user_management': return '??'
+      case 'broadcast': return '??'
+      default: return '??'
+    }
+  },
+
+  validateCommand: (command: string) => {
+    const validCommands = [
+      '/start', '/help', '/register', '/newtask', '/mytasks', 
+      '/status', '/notes', '/activity', '/travel', '/absent', 
+      '/upload', '/files'
+    ]
     
-    const activities = await db.all(`
-      SELECT 
-        al.id,
-        u.full_name as user_name,
-        al.activity_type,
-        al.description,
-        al.created_at as timestamp,
-        'success' as status,
-        ('/' || al.activity_type || ' ' || al.description) as command
-      FROM activity_logs al
-      JOIN users u ON al.user_id = u.id
-      WHERE u.telegram_id IS NOT NULL
-        AND al.created_at >= datetime('now', '-24 hours')
-      ORDER BY al.created_at DESC
-      LIMIT 50
-    `)
+    return validCommands.includes(command) || command.startsWith('/')
+  },
 
-    return NextResponse.json({ activities })
-
-  } catch (error) {
-    console.error("Bot activity error:", error)
-    return NextResponse.json(
-      { message: "Internal server error" },
-      { status: 500 }
-    )
+  parseCommand: (commandString: string) => {
+    const parts = commandString.trim().split(' ')
+    const command = parts[0]
+    const parameters = parts.slice(1).join(' ')
+    
+    return { command, parameters }
   }
-}
-
-// Component for managing pending users
-// components/telegram/pending-users-manager.tsx
-import React from 'react'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Check, X, Clock, User } from 'lucide-react'
-import { useTelegram } from '@/hooks/use-telegram'
-
-export function PendingUsersManager() {
-  const { pendingUsers, approveUser, rejectUser, isLoading } = useTelegram()
-  const [selectedRole, setSelectedRole] = React.useState<Record<number, string>>({})
-
-  const handleApprove = async (userId: number) => {
-    const role = selectedRole[userId] || 'technician'
-    await approveUser(userId, role)
-  }
-
-  const handleRoleChange = (userId: number, role: string) => {
-    setSelectedRole(prev => ({ ...prev, [userId]: role }))
-  }
-
-  if (isLoading) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Clock className="h-5 w-5" />
-            Loading Pending Users...
-          </CardTitle>
-        </CardHeader>
-      </Card>
-    )
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <User className="h-5 w-5" />
-          Pending Telegram Registrations
-          <Badge variant="secondary">{pendingUsers.length}</Badge>
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        {pendingUsers.length === 0 ? (
-          <div className="text-center py-8 text-gray-500">
-            <User className="h-12 w-12 mx-auto mb-2 opacity-50" />
-            <p>No pending registrations</p>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {pendingUsers.map((user) => (
-              <div key={user.id} className="flex items-center justify-between p-4 border rounded-lg">
-                <div className="flex-1">
-                  <div className="font-medium">{user.full_name}</div>
-                  <div className="text-sm text-gray-600">@{user.username}</div>
-                  <div className="text-sm text-gray-600">{user.email}</div>
-                  <div className="text-xs text-gray-500">
-                    Registered: {new Date(user.created_at).toLocaleDateString()}
-                  </div>
-                </div>
-                
-                <div className="flex items-center gap-2">
-                  <Select
-                    value={selectedRole[user.id] || 'technician'}
-                    onValueChange={(role) => handleRoleChange(user.id, role)}
-                  >
-                    <SelectTrigger className="w-32">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="technician">Technician</SelectItem>
-                      <SelectItem value="manager">Manager</SelectItem>
-                      <SelectItem value="commercial">Commercial</SelectItem>
-                      <SelectItem value="other">Other</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  
-                  <Button
-                    onClick={() => handleApprove(user.id)}
-                    size="sm"
-                    className="bg-green-600 hover:bg-green-700"
-                  >
-                    <Check className="h-4 w-4" />
-                  </Button>
-                  
-                  <Button
-                    onClick={() => rejectUser(user.id)}
-                    size="sm"
-                    variant="destructive"
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  )
 }
