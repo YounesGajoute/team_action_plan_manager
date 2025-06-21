@@ -1,0 +1,80 @@
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
+import jwt from 'jsonwebtoken'
+import bcrypt from 'bcrypt'
+import sqlite3 from 'sqlite3'
+import { open } from 'sqlite'
+import path from 'path'
+
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key'
+const dbPath = path.join(process.cwd(), 'data', 'techmac.db')
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const { username, password } = body
+
+    console.log("Login attempt for:", username)
+
+    const db = await open({
+      filename: dbPath,
+      driver: sqlite3.Database
+    })
+
+    const user = await db.get('SELECT * FROM users WHERE username = ?', [username])
+
+    if (!user) {
+      console.log("User not found:", username)
+      return NextResponse.json({ message: 'Invalid credentials' }, { status: 401 })
+    }
+
+    const validPassword = await bcrypt.compare(password, user.password_hash)
+
+    if (!validPassword) {
+      console.log("Invalid password for:", username)
+      return NextResponse.json({ message: 'Invalid credentials' }, { status: 401 })
+    }
+
+    const token = jwt.sign(
+      {
+        user_id: user.id,
+        username: user.username,
+        role: user.role
+      },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    )
+
+    console.log("Login successful for:", username)
+
+    const response = NextResponse.json({
+      token,
+      user: {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        full_name: user.full_name,
+        email: user.email,
+        phone: user.phone,
+        telegram_id: user.telegram_id,
+        status: user.status,
+        profile_photo_url: user.profile_photo_url
+      }
+    }, { status: 200 })
+
+    response.cookies.set('authToken', token, {
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60,
+      path: '/'
+    })
+
+    console.log("Token set in cookies")
+    return response
+
+  } catch (error) {
+    console.error('Login error:', error)
+    return NextResponse.json({ message: 'Internal server error' }, { status: 500 })
+  }
+}
