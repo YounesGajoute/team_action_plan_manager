@@ -1,3 +1,4 @@
+// app/api/telegram/webhook/route.ts
 import { NextRequest, NextResponse } from "next/server"
 import { openDb } from "@/lib/database"
 
@@ -37,7 +38,7 @@ async function processTelegramUpdate(update: any) {
       const text = message.text || ''
       
       // Log the incoming message
-      console.log(`Received message from ${telegramId}: ${text}`)
+      console.log(`?? Received message from ${telegramId}: ${text}`)
       
       // Find user by Telegram ID
       const user = await db.get(
@@ -58,12 +59,82 @@ async function processTelegramUpdate(update: any) {
           new Date().toISOString(),
           new Date().toISOString()
         ])
+
+        console.log(`? Logged command: ${text} from user ${user.full_name}`)
+      } else if (!user) {
+        console.log(`? Unknown user with Telegram ID: ${telegramId}`)
       }
     }
+
+    // Handle callback queries (inline keyboard responses)
+    if (update.callback_query) {
+      const callbackQuery = update.callback_query
+      const telegramId = callbackQuery.from.id.toString()
+      const data = callbackQuery.data
+      
+      console.log(`?? Callback query from ${telegramId}: ${data}`)
+      
+      // Find user and log callback activity
+      const user = await db.get(
+        'SELECT * FROM users WHERE telegram_id = ? AND status = "active"',
+        [telegramId]
+      )
+
+      if (user) {
+        await db.run(`
+          INSERT INTO activity_logs (
+            user_id, activity_type, description, start_time, created_at
+          ) VALUES (?, ?, ?, ?, ?)
+        `, [
+          user.id,
+          'telegram_callback',
+          `Callback: ${data}`,
+          new Date().toISOString(),
+          new Date().toISOString()
+        ])
+      }
+    }
+
+    // Handle file uploads
+    if (update.message && (update.message.document || update.message.photo)) {
+      const message = update.message
+      const telegramId = message.from.id.toString()
+      
+      console.log(`?? File upload from ${telegramId}`)
+      
+      const user = await db.get(
+        'SELECT * FROM users WHERE telegram_id = ? AND status = "active"',
+        [telegramId]
+      )
+
+      if (user) {
+        const fileType = update.message.document ? 'document' : 'photo'
+        await db.run(`
+          INSERT INTO activity_logs (
+            user_id, activity_type, description, start_time, created_at
+          ) VALUES (?, ?, ?, ?, ?)
+        `, [
+          user.id,
+          'file_upload',
+          `Uploaded ${fileType} via Telegram`,
+          new Date().toISOString(),
+          new Date().toISOString()
+        ])
+      }
+    }
+
   } catch (error) {
     console.error("Error processing telegram update:", error)
   } finally {
-    // Note: We should handle database connection properly in your database module
-    // For now, we'll leave it open as closing might be handled elsewhere
+    await db.close()
   }
+}
+
+// GET endpoint for webhook verification
+export async function GET(request: NextRequest) {
+  return NextResponse.json({ 
+    message: "Telegram webhook endpoint is active",
+    status: "ok",
+    timestamp: new Date().toISOString()
+  })
 }

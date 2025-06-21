@@ -1,3 +1,4 @@
+// app/api/telegram/stats/route.ts
 import { NextRequest, NextResponse } from "next/server"
 import { openDb } from "@/lib/database"
 import { verifyToken } from "@/lib/auth"
@@ -11,50 +12,78 @@ export async function GET(request: NextRequest) {
 
     const db = await openDb()
     
-    // Get bot usage statistics
-    const stats = await db.get(`
-      SELECT 
-        COUNT(DISTINCT al.user_id) as active_users,
-        COUNT(al.id) as total_activities,
-        COUNT(CASE WHEN DATE(al.created_at) = DATE('now') THEN 1 END) as today_activities,
-        COUNT(CASE WHEN DATE(al.created_at) = DATE('now') THEN 1 END) as commands_today,
-        COUNT(CASE WHEN f.upload_method = 'telegram' THEN 1 END) as files_uploaded,
-        COUNT(CASE WHEN t.created_at >= DATE('now', '-7 days') THEN 1 END) as tasks_created
-      FROM activity_logs al
-      LEFT JOIN users u ON al.user_id = u.id
-      LEFT JOIN files f ON f.uploaded_at >= DATE('now', '-7 days')
-      LEFT JOIN tasks t ON t.created_at >= DATE('now', '-7 days')
-      WHERE al.created_at >= DATE('now', '-7 days')
-        AND u.telegram_id IS NOT NULL
-    `)
-    
-    // Get recent activity from users with Telegram IDs
-    const recentActivity = await db.all(`
-      SELECT 
-        al.id,
-        u.full_name as user_name,
-        al.activity_type,
-        al.description,
-        al.created_at as timestamp,
-        'success' as status,
-        ('/' || al.activity_type || ' ' || al.description) as command
-      FROM activity_logs al
-      JOIN users u ON al.user_id = u.id
-      WHERE u.telegram_id IS NOT NULL
-        AND al.created_at >= DATE('now', '-1 days')
-      ORDER BY al.created_at DESC
-      LIMIT 10
-    `)
+    // Get bot statistics
+    const [
+      activeUsers,
+      totalActivities,
+      todayActivities,
+      commandsToday,
+      filesUploaded,
+      tasksCreated
+    ] = await Promise.all([
+      // Active users count
+      db.get(`
+        SELECT COUNT(*) as count 
+        FROM users 
+        WHERE status = 'active' AND telegram_id IS NOT NULL
+      `),
+      
+      // Total activities
+      db.get(`
+        SELECT COUNT(*) as count 
+        FROM activity_logs 
+        WHERE created_at >= datetime('now', '-7 days')
+      `),
+      
+      // Today's activities
+      db.get(`
+        SELECT COUNT(*) as count 
+        FROM activity_logs 
+        WHERE date(created_at) = date('now')
+      `),
+      
+      // Commands today (telegram activities)
+      db.get(`
+        SELECT COUNT(*) as count 
+        FROM activity_logs 
+        WHERE activity_type = 'telegram_command' 
+        AND date(created_at) = date('now')
+      `),
+      
+      // Files uploaded this week
+      db.get(`
+        SELECT COUNT(*) as count 
+        FROM files 
+        WHERE upload_method = 'telegram' 
+        AND uploaded_at >= datetime('now', '-7 days')
+      `),
+      
+      // Tasks created via telegram this week
+      db.get(`
+        SELECT COUNT(*) as count 
+        FROM tasks t
+        JOIN activity_logs al ON al.description LIKE '%' || t.task_code || '%'
+        WHERE al.activity_type = 'telegram_command'
+        AND al.created_at >= datetime('now', '-7 days')
+      `)
+    ])
 
-    // Check bot status (this would normally ping the bot service)
-    const botStatus = 'online' // In production, ping the actual bot
+    // Calculate response time (mock for now - would need actual tracking)
+    const responseTime = 0.3
+
+    // Bot status check (would integrate with actual bot service)
+    const botStatus = 'online'
 
     return NextResponse.json({
-      stats: {
-        ...stats,
-        bot_status: botStatus
-      },
-      recentActivity
+      bot_status: botStatus,
+      active_users: activeUsers?.count || 0,
+      total_activities: totalActivities?.count || 0,
+      today_activities: todayActivities?.count || 0,
+      commands_today: commandsToday?.count || 0,
+      files_uploaded: filesUploaded?.count || 0,
+      tasks_created: tasksCreated?.count || 0,
+      response_time: responseTime,
+      uptime: '99.8%' // Would track actual uptime
     })
 
   } catch (error) {
